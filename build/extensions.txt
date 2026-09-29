@@ -1,0 +1,56 @@
+# Phase 1 extension set — single source of truth for build/craft/*.yml.
+# One extension name per line (as static-php-cli's `spc` names them), blank
+# lines and lines starting with # are ignored.
+#
+# Goal is parity with what CLAUDE.md (~/Projects/pvm) calls the upstream
+# "bulk" set: everything a typical framework/CLI workflow needs, compiled in
+# (musl static builds can't dlopen a .so — see CLAUDE.md section 8).
+#
+# This list is provisional: names are checked against `spc extract --list`
+# /`spc download --list-all` during the first CI dry run, since a typo here
+# only surfaces by breaking the build. Fix names here, not in the workflow.
+#
+# LGPL-licensed (statically linked; see THIRD_PARTY_LICENSES.md): gmp,
+# gettext, libunistring (pulled in by intl), idn2 (pulled in by curl).
+
+bcmath
+bz2
+calendar
+ctype
+curl
+dom
+exif
+fileinfo
+filter
+ftp
+gd
+gettext
+gmp
+iconv
+intl
+json
+mbstring
+mysqli
+opcache
+openssl
+pcntl
+pdo
+pdo_mysql
+pdo_pgsql
+pdo_sqlite
+pgsql
+phar
+posix
+redis
+session
+simplexml
+sockets
+sodium
+soap
+sqlite3
+tokenizer
+xml
+xmlreader
+xmlwriter
+zip
+zlib

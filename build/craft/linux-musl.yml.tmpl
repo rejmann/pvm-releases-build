@@ -1,0 +1,27 @@
+# spc craft.yml template for linux-amd64 / linux-arm64, musl static linkage.
+# build.yml renders this by substituting the version and extensions
+# placeholders below (comma-joined build/extensions.txt), running `spc craft` inside a plain
+# `docker run alpine:3.21` (see .github/workflows/build.yml), then appends
+# its own download-options.custom-url so spc compiles the exact tarball
+# verify-php-source.sh already GPG-verified, not whatever it would fetch by
+# default.
+#
+# Schema reference: static-php-cli's docs/deps-craft-yml.md (fetched
+# 2026-09-29 from crazywhalecc/static-php-cli) — php-version/extensions/sapi
+# accept either a YAML list or a comma-separated string; this uses whichever
+# reads more naturally per key.
+#
+# Static musl linkage is what makes the resulting php binary run unmodified
+# across every distro in build/smoke/ (see CLAUDE.md section 3 in the pvm
+# repo for the matrix this was validated against): no libc, no .so
+# extensions loaded at runtime (dl() always returns false — CLAUDE.md
+# section 7/8), just one self-contained executable.
+php-version: "__PHP_VERSION__"
+extensions: "__EXTENSIONS__"
+sapi:
+  - cli
+debug: false
+clean-build: false
+craft-options:
+  doctor: true
+  download: true

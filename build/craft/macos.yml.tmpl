@@ -1,0 +1,14 @@
+# spc craft.yml template for darwin-amd64 / darwin-arm64.
+# static-php-cli builds on macOS link only against system libraries (no
+# musl/glibc equivalent question there), per CLAUDE.md section 6. Rendered
+# the same way as build/craft/linux-musl.yml.tmpl — see that file's header
+# for the schema reference and the download-options.custom-url note.
+php-version: "__PHP_VERSION__"
+extensions: "__EXTENSIONS__"
+sapi:
+  - cli
+debug: false
+clean-build: false
+craft-options:
+  doctor: true
+  download: true

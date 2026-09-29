@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rejmann/pvm-releases-build/manifest.schema.json",
+  "title": "pvm PHP release manifest",
+  "description": "Signed index of PHP builds produced by this repository's CI. pvm fetches this file, verifies its ed25519 signature against the public key embedded in the pvm binary, then resolves the artifact matching the host's OS/arch/libc.",
+  "type": "object",
+  "required": ["schema", "generated", "releases"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "type": "integer",
+      "const": 1,
+      "description": "Bump when a breaking change is made to this format; pvm refuses manifests with an unknown schema."
+    },
+    "generated": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp of when this manifest was generated and signed."
+    },
+    "releases": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/release" }
+    }
+  },
+  "$defs": {
+    "release": {
+      "type": "object",
+      "required": ["version", "source_sha256", "artifacts"],
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+          "description": "PHP version this release builds, e.g. 8.4.26."
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 of the php.net source tarball used for this build, as verified in the verify-source job."
+        },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/artifact" }
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["os", "arch", "linkage", "url", "sha256", "size", "format", "extensions", "shared_extensions"],
+      "additionalProperties": false,
+      "properties": {
+        "os": { "type": "string", "enum": ["linux", "darwin"] },
+        "arch": { "type": "string", "enum": ["amd64", "arm64"] },
+        "libc": {
+          "type": ["string", "null"],
+          "enum": ["musl", "glibc", null],
+          "description": "null for darwin. Phase 1 Linux artifacts are always musl static."
+        },
+        "linkage": { "type": "string", "enum": ["static", "dynamic"] },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "GitHub Release asset URL. This is the only place a download URL appears — nothing else in pvm is allowed to construct one."
+        },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "size": { "type": "integer", "minimum": 1 },
+        "format": { "type": "string", "enum": ["tar.gz"] },
+        "dl": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether dl() can load shared extensions on this artifact. Always false in Phase 1 (static musl)."
+        },
+        "min_glibc": {
+          "type": ["string", "null"],
+          "description": "Reserved for Phase 2 dynamic glibc artifacts. Always null in Phase 1."
+        },
+        "min_macos": {
+          "type": ["string", "null"],
+          "description": "Minimum macOS version this artifact supports, e.g. \"13.0\"."
+        },
+        "extensions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Extensions compiled into the binary (build/extensions.txt at build time)."
+        },
+        "shared_extensions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Reserved for Phase 2 .so extension artifacts. Always empty in Phase 1."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,50 @@
+name: Check for new PHP releases
+
+# Runs daily, compares php.net's current branch feeds against the php-*
+# releases already published here (cmd/releasecheck), and fires build.yml
+# once per missing patch via repository_dispatch. build.yml then verifies,
+# builds, smoke-tests, publishes and signs the manifest end to end.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: List already-published PHP versions
+        id: published
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          published="$(gh release list --limit 200 --json tagName \
+            --jq '[.[] | select(.tagName | startswith("php-")) | .tagName | ltrimstr("php-")] | join(",")')"
+          echo "versions=$published" >> "$GITHUB_OUTPUT"
+
+      - name: Find missing versions
+        id: missing
+        run: |
+          missing="$(go run ./cmd/releasecheck -published '${{ steps.published.outputs.versions }}')"
+          echo "versions=$missing" >> "$GITHUB_OUTPUT"
+          echo "Missing: $missing"
+
+      - name: Dispatch a build per missing version
+        if: steps.missing.outputs.versions != '[]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo '${{ steps.missing.outputs.versions }}' | jq -r '.[]' | while read -r version; do
+            echo "Dispatching build for PHP $version"
+            gh api "repos/${{ github.repository }}/dispatches" \
+              -f event_type=build-php \
+              -f "client_payload[version]=$version"
+          done

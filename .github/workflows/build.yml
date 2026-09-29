@@ -1,0 +1,378 @@
+name: Build PHP release
+
+# Builds one PHP version for the Phase 1 target matrix (see CLAUDE.md in the
+# pvm repo, section 6): linux-amd64/linux-arm64 as musl static binaries, and
+# darwin-amd64/darwin-arm64. Every build only ever compiles a php.net source
+# tarball whose SHA-256 was already checked against a GPG-verified copy —
+# see verify-source below and scripts/verify-php-source.sh.
+#
+# Two ways in:
+#   - workflow_dispatch: manual run, for a dry run (publish=false, the
+#     default) or a deliberate manual release (publish=true).
+#   - repository_dispatch (type: build-php): fired by check-releases.yml
+#     for a version php.net just published, always with publish=true.
+#
+# Linux musl builds run static-php-cli (spc) inside a plain `docker run
+# alpine:3.21` — the same approach static-php-cli's own CI uses via its
+# bin/spc-alpine-docker wrapper, reproduced directly here since we only need
+# to run the prebuilt spc binary, not their dev toolchain. macOS builds run
+# spc directly on the hosted runner, matching static-php-cli's own
+# .github/workflows/build-unix.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "PHP version to build, e.g. 8.4.26"
+        required: true
+        type: string
+      targets:
+        description: "Comma-separated target ids, or 'all'"
+        required: false
+        default: "all"
+        type: string
+      publish:
+        description: "Publish the GitHub Release and sign the manifest (off = build + smoke-test only)"
+        required: false
+        default: false
+        type: boolean
+  repository_dispatch:
+    types: [build-php]
+
+env:
+  SPC_VERSION: "2.8.5"
+
+jobs:
+  plan:
+    name: Plan target matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      publish: ${{ steps.plan.outputs.publish }}
+      targets: ${{ steps.plan.outputs.targets }}
+      linux_targets: ${{ steps.plan.outputs.linux_targets }}
+    steps:
+      - name: Compute version, publish flag and target matrix
+        id: plan
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+          DISPATCH_TARGETS: ${{ inputs.targets }}
+          DISPATCH_PUBLISH: ${{ inputs.publish }}
+          REPO_VERSION: ${{ github.event.client_payload.version }}
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            version="$REPO_VERSION"
+            targets="all"
+            publish="true"
+          else
+            version="$DISPATCH_VERSION"
+            targets="${DISPATCH_TARGETS:-all}"
+            publish="$DISPATCH_PUBLISH"
+          fi
+          if [ -z "$version" ]; then
+            echo "::error::no version given"
+            exit 1
+          fi
+
+          all='[
+            {"id":"linux-amd64-musl","runner":"ubuntu-24.04","family":"linux-musl","os":"linux","arch":"amd64","libc":"musl"},
+            {"id":"linux-arm64-musl","runner":"ubuntu-24.04-arm","family":"linux-musl","os":"linux","arch":"arm64","libc":"musl"},
+            {"id":"darwin-amd64","runner":"macos-15-intel","family":"macos","os":"darwin","arch":"amd64","libc":null},
+            {"id":"darwin-arm64","runner":"macos-15","family":"macos","os":"darwin","arch":"arm64","libc":null}
+          ]'
+
+          if [ "$targets" = "all" ]; then
+            selected="$all"
+          else
+            selected="$(echo "$all" | jq -c --arg ids "$targets" '
+              ($ids | split(",") | map(. | ltrimstr(" ") | rtrimstr(" "))) as $want
+              | [ .[] | select(.id as $i | $want | index($i)) ]
+            ')"
+          fi
+          if [ "$(echo "$selected" | jq 'length')" = "0" ]; then
+            echo "::error::no targets matched '$targets'"
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "targets=$(echo "$selected" | jq -c .)" >> "$GITHUB_OUTPUT"
+          echo "linux_targets=$(echo "$selected" | jq -c '[.[] | select(.family == "linux-musl")]')" >> "$GITHUB_OUTPUT"
+
+  verify-source:
+    name: Verify php.net source (SHA-256 + GPG)
+    needs: plan
+    runs-on: ubuntu-24.04
+    outputs:
+      sha256: ${{ steps.verify.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify source tarball
+        id: verify
+        run: ./scripts/verify-php-source.sh "${{ needs.plan.outputs.version }}" /tmp/verified-src
+
+  build:
+    name: Build ${{ matrix.target.id }}
+    needs: [plan, verify-source]
+    runs-on: ${{ matrix.target.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.plan.outputs.targets) }}
+    permissions:
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      EXPECTED_SHA256: ${{ needs.verify-source.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Render craft.yml
+        run: |
+          family="${{ matrix.target.family }}"
+          extensions="$(grep -v '^#' build/extensions.txt | grep -v '^$' | paste -sd, -)"
+          sed -e "s/__PHP_VERSION__/${VERSION}/" -e "s/__EXTENSIONS__/${extensions}/" \
+            "build/craft/${family}.yml.tmpl" > craft.yml
+          {
+            echo "download-options:"
+            echo "  custom-url: [\"php-src:https://www.php.net/distributions/php-${VERSION}.tar.gz\"]"
+          } >> craft.yml
+          cat craft.yml
+
+      # --- linux-musl: everything static-php-cli needs runs inside Alpine,
+      # via `docker run`, bind-mounting the workspace so buildroot/, downloads/
+      # etc. land on the host runner just like a native build would.
+      - name: Download spc (linux)
+        if: matrix.target.family == 'linux-musl'
+        run: |
+          spc_arch="x86_64"; [ "${{ matrix.target.arch }}" = "arm64" ] && spc_arch="aarch64"
+          asset="spc-linux-${spc_arch}.tar.gz"
+          expected="$(awk -v a="$asset" '$2 == a {print $1}' scripts/spc-checksums.txt)"
+          [ -n "$expected" ] || { echo "::error::no pinned checksum for $asset"; exit 1; }
+          curl -fsSL -o spc.tar.gz "https://github.com/crazywhalecc/static-php-cli/releases/download/${SPC_VERSION}/${asset}"
+          actual="$(sha256sum spc.tar.gz | cut -d' ' -f1)"
+          [ "$actual" = "$expected" ] || { echo "::error::spc checksum mismatch: expected $expected got $actual"; exit 1; }
+          tar -xzf spc.tar.gz && chmod +x spc
+
+      - name: Build inside Alpine (linux-musl)
+        if: matrix.target.family == 'linux-musl'
+        run: |
+          docker run --rm -v "$(pwd)":/work -w /work alpine:3.21 sh -euc '
+            apk add --no-cache \
+              autoconf automake gettext bash binutils bison build-base cmake \
+              curl file flex g++ gcc git jq libgcc libtool libstdc++ \
+              linux-headers m4 make pkgconfig re2c wget xz gettext-dev binutils-gold
+            ./spc doctor --auto-fix -n
+            ./spc craft craft.yml
+            extensions="$(grep -v "^#" build/extensions.txt | grep -v "^$" | paste -sd, -)"
+            ./spc dump-license --for-extensions="$extensions" --dump-dir=licenses
+          '
+
+      # --- macOS: spc runs directly on the hosted runner (Xcode CLT +
+      # Homebrew already present), same as static-php-cli's own CI.
+      - name: Download spc (macOS)
+        if: matrix.target.family == 'macos'
+        run: |
+          spc_arch="x86_64"; [ "${{ matrix.target.arch }}" = "arm64" ] && spc_arch="aarch64"
+          asset="spc-macos-${spc_arch}.tar.gz"
+          expected="$(awk -v a="$asset" '$2 == a {print $1}' scripts/spc-checksums.txt)"
+          [ -n "$expected" ] || { echo "::error::no pinned checksum for $asset"; exit 1; }
+          curl -fsSL -o spc.tar.gz "https://github.com/crazywhalecc/static-php-cli/releases/download/${SPC_VERSION}/${asset}"
+          actual="$(shasum -a 256 spc.tar.gz | cut -d' ' -f1)"
+          [ "$actual" = "$expected" ] || { echo "::error::spc checksum mismatch: expected $expected got $actual"; exit 1; }
+          tar -xzf spc.tar.gz
+          chmod +x spc
+          xattr -cr ./spc || true
+
+      - name: Build (macOS)
+        if: matrix.target.family == 'macos'
+        run: |
+          ./spc doctor --auto-fix -n
+          ./spc craft craft.yml
+          extensions="$(grep -v '^#' build/extensions.txt | grep -v '^$' | paste -sd, -)"
+          ./spc dump-license --for-extensions="$extensions" --dump-dir=licenses
+
+      - name: Re-verify the source spc actually compiled
+        run: |
+          hash_cmd="sha256sum"
+          [ "${{ matrix.target.family }}" = "macos" ] && hash_cmd="shasum -a 256"
+          src="$(find downloads -maxdepth 1 -name "php-${VERSION}.tar.gz" | head -1)"
+          if [ -z "$src" ]; then
+            echo "::error::spc did not download php-${VERSION}.tar.gz under downloads/ — check the custom-url override still matches spc's naming"
+            exit 1
+          fi
+          actual="$($hash_cmd "$src" | cut -d' ' -f1)"
+          if [ "$actual" != "$EXPECTED_SHA256" ]; then
+            echo "::error::the source tree spc compiled does not match the GPG-verified tarball (expected $EXPECTED_SHA256, got $actual)"
+            exit 1
+          fi
+
+      - name: Package artifact
+        id: package
+        run: |
+          hash_cmd="sha256sum"; size_cmd="stat -c%s"
+          [ "${{ matrix.target.family }}" = "macos" ] && hash_cmd="shasum -a 256" && size_cmd="stat -f%z"
+          name="php-${VERSION}-${{ matrix.target.id }}.tar.gz"
+          mkdir -p pkg/php/bin
+          cp buildroot/bin/php pkg/php/bin/php
+          tar -czf "$name" -C pkg php
+          sha256="$($hash_cmd "$name" | cut -d' ' -f1)"
+          size="$($size_cmd "$name")"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+          tar -czf "licenses-${{ matrix.target.id }}.tar.gz" licenses
+
+      - name: Generate build provenance attestation
+        if: needs.plan.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ steps.package.outputs.name }}
+
+      - name: Write manifest artifact descriptor
+        run: |
+          libc_json="null"
+          [ "${{ matrix.target.libc }}" = "musl" ] && libc_json='"musl"'
+          extensions_json="$(grep -v '^#' build/extensions.txt | grep -v '^$' | jq -R . | jq -s .)"
+          asset_url="https://github.com/${{ github.repository }}/releases/download/php-${VERSION}/${{ steps.package.outputs.name }}"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg source_sha256 "$EXPECTED_SHA256" \
+            --arg os "${{ matrix.target.os }}" \
+            --arg arch "${{ matrix.target.arch }}" \
+            --argjson libc "$libc_json" \
+            --arg url "$asset_url" \
+            --arg sha256 "${{ steps.package.outputs.sha256 }}" \
+            --argjson size "${{ steps.package.outputs.size }}" \
+            --argjson extensions "$extensions_json" \
+            '{version: $version, source_sha256: $source_sha256, artifact: {
+              os: $os, arch: $arch, libc: $libc, linkage: "static",
+              url: $url, sha256: $sha256, size: $size, format: "tar.gz",
+              dl: false, min_glibc: null, min_macos: null,
+              extensions: $extensions, shared_extensions: []
+            }}' > "manifest-input-${{ matrix.target.id }}.json"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: build-${{ matrix.target.id }}
+          path: |
+            ${{ steps.package.outputs.name }}
+            licenses-${{ matrix.target.id }}.tar.gz
+            manifest-input-${{ matrix.target.id }}.json
+          retention-days: 7
+
+  smoke-test:
+    name: Smoke test ${{ matrix.target.id }} on ${{ matrix.distro.label }}
+    needs: [plan, build]
+    # Only linux-*-musl artifacts get distro smoke tests — a macOS binary
+    # can't run in a Linux container, so needs.plan.outputs.linux_targets
+    # (filtered in the plan job) is what drives this matrix, not `targets`.
+    if: needs.plan.outputs.linux_targets != '[]' && (needs.plan.outputs.publish == 'true' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.plan.outputs.linux_targets) }}
+        distro:
+          - { label: "debian", image: "debian:12-slim" }
+          - { label: "ubuntu", image: "ubuntu:24.04" }
+          - { label: "fedora", image: "fedora:42" }
+          - { label: "arch", image: "archlinux:latest" }
+          - { label: "alpine", image: "alpine:3.22" }
+          - { label: "opensuse", image: "opensuse/leap:15.6" }
+          - { label: "rockylinux", image: "rockylinux:8-minimal" }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: build-${{ matrix.target.id }}
+          path: dl
+      - name: Run smoke test
+        run: |
+          tarball="$(ls dl/php-*-${{ matrix.target.id }}.tar.gz)"
+          cp "$tarball" build/smoke/php.tar.gz
+          docker build --build-arg BASE_IMAGE=${{ matrix.distro.image }} -t smoke-${{ matrix.target.id }}-${{ matrix.distro.label }} build/smoke
+          docker run --rm -v "$(pwd)/build/smoke/php.tar.gz:/php.tar.gz:ro" \
+            smoke-${{ matrix.target.id }}-${{ matrix.distro.label }} "${{ needs.plan.outputs.version }}"
+
+  publish:
+    name: Publish release
+    needs: [plan, build, smoke-test]
+    # A plain `if: needs.plan.outputs.publish == 'true'` would replace the
+    # default implicit success() check entirely, so build's and
+    # smoke-test's results are checked explicitly here too. smoke-test can
+    # legitimately be `skipped` (e.g. it's gated on needs.plan.outputs.linux_targets
+    # not being empty), which is fine; `failure`/`cancelled` are not.
+    if: |
+      needs.plan.outputs.publish == 'true' &&
+      needs.build.result == 'success' &&
+      (needs.smoke-test.result == 'success' || needs.smoke-test.result == 'skipped')
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: build-*
+          path: dl
+          merge-multiple: true
+      - name: Create/update the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ needs.plan.outputs.version }}"
+          tag="php-${version}"
+          assets=$(find dl -maxdepth 1 -name '*.tar.gz')
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" $assets --clobber
+          else
+            gh release create "$tag" $assets \
+              --title "PHP ${version}" \
+              --notes "Static PHP ${version} builds — see manifest.json (signed) at the 'manifest' release for the verifiable index."
+          fi
+
+  manifest:
+    name: Sign and publish manifest.json
+    needs: [plan, build, publish]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: build-*
+          path: dl
+          merge-multiple: true
+      - name: Fetch previous manifest.json (if any)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download manifest --pattern manifest.json --output previous-manifest.json 2>/dev/null || true
+      - name: Sign manifest
+        env:
+          MANIFEST_SIGNING_KEY: ${{ secrets.MANIFEST_SIGNING_KEY }}
+        run: |
+          go run ./cmd/manifestgen \
+            -artifacts 'dl/manifest-input-*.json' \
+            -previous previous-manifest.json \
+            -out manifest.json \
+            -sig manifest.json.sig
+      - name: Publish manifest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view manifest >/dev/null 2>&1; then
+            gh release upload manifest manifest.json manifest.json.sig --clobber
+          else
+            gh release create manifest manifest.json manifest.json.sig \
+              --title "manifest" \
+              --notes "Signed index of every PHP build this repository publishes. pvm fetches manifest.json + manifest.json.sig from this release and verifies the signature against the public key embedded in pvm. See keys/manifest-signing.pub and SETUP.md."
+          fi

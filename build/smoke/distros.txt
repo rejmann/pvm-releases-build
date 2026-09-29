@@ -1,0 +1,12 @@
+# Linux smoke-test matrix — the base images build.yml runs build/smoke/Dockerfile
+# against for every linux-*-musl artifact. Same seven distros CLAUDE.md
+# (~/Projects/pvm, section 3) validated by hand for static-php musl builds.
+# One "<label> <image>" pair per line.
+
+debian debian:12-slim
+ubuntu ubuntu:24.04
+fedora fedora:42
+arch archlinux:latest
+alpine alpine:3.22
+opensuse opensuse/leap:15.6
+rockylinux rockylinux:8-minimal

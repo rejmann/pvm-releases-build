@@ -1,0 +1,14 @@
+/craft.yml
+/downloads/
+/buildroot/
+/pkgroot/
+/dist/
+/log/
+/source/
+/pkg/
+/licenses/
+*.tar.gz
+*.tar.gz.sig
+manifest.json
+manifest.json.sig
+.claude/
