@@ -18,6 +18,35 @@ if [ ! -x "$php_bin" ]; then
   exit 1
 fi
 
+# The tarball ships no php.ini: pvm generates one at install time pointing
+# openssl.cafile/curl.cainfo at the distro's CA bundle and passes it via
+# PHPRC, with PHP_INI_SCAN_DIR isolating it from any system PHP config
+# (CLAUDE.md section 7). Do the same here so the smoke test exercises the
+# binary the way pvm will actually run it.
+ca_bundle=""
+for f in \
+  /etc/ssl/certs/ca-certificates.crt \
+  /etc/pki/tls/certs/ca-bundle.crt \
+  /etc/ssl/ca-bundle.pem \
+  /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem \
+  /etc/ssl/cert.pem; do
+  if [ -r "$f" ]; then
+    ca_bundle="$f"
+    break
+  fi
+done
+if [ -z "$ca_bundle" ]; then
+  echo "smoke-test: no CA bundle found in any known location" >&2
+  exit 1
+fi
+mkdir -p /opt/php/etc/conf.d
+cat > /opt/php/etc/php.ini <<EOF
+openssl.cafile=$ca_bundle
+curl.cainfo=$ca_bundle
+EOF
+export PHPRC=/opt/php/etc
+export PHP_INI_SCAN_DIR=/opt/php/etc/conf.d
+
 echo "== php -v =="
 actual_version="$("$php_bin" -v | head -1)"
 echo "$actual_version"
