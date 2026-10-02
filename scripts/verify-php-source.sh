@@ -39,10 +39,30 @@ export GNUPGHOME="$gnupg_home"
 chmod 700 "$gnupg_home"
 
 echo "verify-php-source: checking php.net's releases feed for branch $branch..." >&2
-feed_json="$(curl -fsSL "https://www.php.net/releases/index.php?json&version=${branch}")"
-feed_version="$(echo "$feed_json" | jq -r '.version')"
-if [[ "$feed_version" != "$version" ]]; then
-  echo "verify-php-source: php.net reports $feed_version as the latest $branch patch, not $version." >&2
+# php.net's own backends don't always agree with each other: the same URL
+# has been observed flip-flopping between two different "latest" versions
+# for the same branch across consecutive requests (confirmed by hand: 5
+# straight queries said 8.3.33, then a request moments later said 8.3.35).
+# Retry instead of failing on the first read — we only need one response
+# that actually matches what we were asked to build.
+feed_json=""
+observed=()
+for attempt in $(seq 1 10); do
+  feed_json="$(curl -fsSL "https://www.php.net/releases/index.php?json&version=${branch}")"
+  feed_version="$(echo "$feed_json" | jq -r '.version')"
+  if [[ "$feed_version" == "$version" ]]; then
+    break
+  fi
+  observed+=("$feed_version")
+  feed_json=""
+  if [[ "$attempt" -lt 10 ]]; then
+    echo "verify-php-source: attempt $attempt/10: php.net reports $feed_version, not $version — retrying..." >&2
+    sleep 3
+  fi
+done
+if [[ -z "$feed_json" ]]; then
+  echo "verify-php-source: php.net never reported $version as the latest $branch patch after 10 attempts." >&2
+  echo "  Observed instead: $(printf '%s ' "${observed[@]}")" >&2
   echo "  This script only verifies the current latest patch of a branch (see script header)." >&2
   exit 1
 fi
