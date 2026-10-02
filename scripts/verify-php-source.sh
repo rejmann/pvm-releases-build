@@ -83,7 +83,12 @@ if ! echo "$status" | grep -qE '^\[GNUPG:\] (GOODSIG|EXPKEYSIG)'; then
   echo "$status" >&2
   exit 1
 fi
-signer_fpr="$(echo "$status" | awk '/^\[GNUPG:\] VALIDSIG/ {print $3}')"
+# VALIDSIG's 3rd field is the fingerprint of the key that actually signed
+# (which can be a subkey); its *last* field is always the primary key's
+# fingerprint, per GnuPG's documented status-line format — that's the one
+# that's stable across a release manager rotating signing subkeys, and the
+# one actually pinned below.
+signer_fpr="$(echo "$status" | awk '/^\[GNUPG:\] VALIDSIG/ {print $NF}')"
 if [[ -z "$signer_fpr" ]]; then
   echo "verify-php-source: could not extract signer fingerprint from GPG output" >&2
   exit 1
