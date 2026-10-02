@@ -1,9 +1,11 @@
 name: Check for new PHP releases
 
-# Runs daily, compares php.net's current branch feeds against the php-*
-# releases already published here (cmd/releasecheck), and fires build.yml
-# once per missing patch via repository_dispatch. build.yml then verifies,
-# builds, smoke-tests, publishes and signs the manifest end to end.
+# Runs daily. cmd/releasecheck discovers every PHP branch >= its
+# -min-version default (7.4) straight from php-src's own branches, checks
+# each one's current latest patch against the php-* releases already
+# published here, and this job fires build.yml once per missing patch via
+# repository_dispatch. build.yml then verifies, builds, smoke-tests,
+# publishes and signs the manifest end to end.
 on:
   schedule:
     - cron: "17 6 * * *"

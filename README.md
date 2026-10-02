@@ -29,7 +29,7 @@ implements). Short version:
 |---|---|
 | `.github/workflows/build.yml` | verify source → build (Phase 1 matrix) → smoke-test → publish → sign manifest |
 | `.github/workflows/check-releases.yml` | daily: finds new php.net patches, dispatches `build.yml` |
-| `cmd/releasecheck` | diffs php.net's branch feeds against published `php-*` releases here |
+| `cmd/releasecheck` | discovers PHP branches ≥ `-min-version` from php-src, diffs against published `php-*` releases here |
 | `cmd/manifestgen` | assembles + signs `manifest.json` |
 | `cmd/genkey` | one-time: generates the ed25519 signing key (see `SETUP.md`) |
 | `internal/manifest` | shared Go types + sign/verify — the same code path CI and (eventually) `pvm` use |
@@ -53,3 +53,11 @@ the official `releases.json` from windows.php.net for that.
 
 See `SETUP.md` for the one-time steps (signing key, release approval gate)
 and how to run a safe dry build before trusting the scheduler.
+
+## License
+
+Open source, non-profit, no formal license file — the tooling here (Go
+code, scripts, workflows) is meant to be read, reused, and built upon by
+anyone. The PHP binaries this repo publishes carry the PHP License 3.01 and
+whatever LGPL obligations apply to statically linked libraries; see
+`THIRD_PARTY_LICENSES.md` for that.

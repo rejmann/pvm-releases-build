@@ -1,24 +1,36 @@
-# Phase 1 extension set — single source of truth for build/craft/*.yml.
-# One extension name per line (as static-php-cli's `spc` names them), blank
-# lines and lines starting with # are ignored.
+# Agnostic core extension set — single source of truth for build/craft/*.yml.
+# One extension name per line, blank lines and lines starting with # ignored.
 #
-# Goal is parity with what CLAUDE.md (~/Projects/pvm) calls the upstream
-# "bulk" set: everything a typical framework/CLI workflow needs, compiled in
-# (musl static builds can't dlopen a .so — see CLAUDE.md section 8).
+# Deliberately the SAME list for every PHP branch this repo builds (7.4
+# upward) — no per-branch conditional logic in build.yml. Extensions not
+# bundled here are still available via `pvm ext` with its documented
+# `--system` fallback for anything that needs a package manager
+# (~/Projects/pvm CLAUDE.md section 10); musl static builds can't dlopen a
+# .so anyway (section 8), so "compiled in or not at all" already applied.
 #
-# This list is provisional: names are checked against `spc extract --list`
-# /`spc download --list-all` during the first CI dry run, since a typo here
-# only surfaces by breaking the build. Fix names here, not in the workflow.
+# Excluded on purpose (tested empirically against PHP 7.4.33 in Alpine
+# with this exact spc version before any of this was wired into CI):
+#   - opcache: static compilation only supported by spc for PHP >= 8.0.
+#   - intl: PHP 7.4's ext/intl C++ glue doesn't compile against the C++11
+#     API the ICU version spc bundles today requires.
+#   - dom, simplexml, soap, xml, xmlreader, xmlwriter (everything that
+#     depends on the libxml pseudo-extension): PHP 7.4's ext/libxml.c calls
+#     libxml2 functions that were renamed/changed signature upstream since
+#     (e.g. php_libxml_output_buffer_create_filename, the
+#     xmlSetStructuredErrorFunc callback signature).
+# Keeping one list for every branch means 8.1+ loses these too, trading
+# opcache/intl/XML support for zero version-specific branching in the
+# pipeline — pvm's `ext --system` fallback is the intended escape hatch if
+# a workload needs them.
 #
-# LGPL-licensed (statically linked; see THIRD_PARTY_LICENSES.md): gmp,
-# gettext, libunistring (pulled in by intl), idn2 (pulled in by curl).
+# Names are as static-php-cli's `spc` expects them; verified against a real
+# spc 2.8.5 binary (`spc dev:extensions`) before being added here.
 
 bcmath
 bz2
 calendar
 ctype
 curl
-dom
 exif
 fileinfo
 filter
@@ -27,11 +39,9 @@ gd
 gettext
 gmp
 iconv
-intl
 json
 mbstring
 mysqli
-opcache
 openssl
 pcntl
 pdo
@@ -43,14 +53,9 @@ phar
 posix
 redis
 session
-simplexml
 sockets
 sodium
-soap
 sqlite3
 tokenizer
-xml
-xmlreader
-xmlwriter
 zip
 zlib
