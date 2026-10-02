@@ -129,6 +129,8 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Render craft.yml
+        env:
+          SPC_GITHUB_TOKEN: ${{ github.token }}
         run: |
           family="${{ matrix.target.family }}"
           extensions="$(grep -v '^#' build/extensions.txt | grep -v '^$' | paste -sd, -)"
@@ -137,6 +139,13 @@ jobs:
           {
             echo "download-options:"
             echo "  custom-url: [\"php-src:https://www.php.net/distributions/php-${VERSION}.tar.gz\"]"
+            # Running many build jobs at once (7 branches x 4 targets) burns
+            # through GitHub's unauthenticated API rate limit fast, which is
+            # what spc itself hits internally when checking for pre-built
+            # binaries/alternative sources. Without a token one failure mode
+            # is a hard crash in spc's own fallback path, not just a retry.
+            echo "extra-env:"
+            echo "  GITHUB_TOKEN: \"${SPC_GITHUB_TOKEN}\""
           } >> craft.yml
           cat craft.yml
 
