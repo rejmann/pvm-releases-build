@@ -73,8 +73,13 @@ gpg --batch --import "${work_dir}/keyring.bin" >/dev/null 2>&1
 
 echo "verify-php-source: verifying GPG signature..." >&2
 status="$(gpg --batch --status-fd 1 --verify "$sig" "$tarball" 2>/dev/null || true)"
-if ! echo "$status" | grep -q '^\[GNUPG:\] GOODSIG'; then
-  echo "verify-php-source: GPG signature is not a GOODSIG:" >&2
+# EXPKEYSIG (the key has since expired) is accepted alongside GOODSIG: an
+# expiry date doesn't retroactively forge a signature made while the key was
+# still valid, and our trust boundary is the pinned fingerprint below, not
+# gpg's own notion of current key validity. REVKEYSIG/BADSIG/anything else
+# still falls through to the error below.
+if ! echo "$status" | grep -qE '^\[GNUPG:\] (GOODSIG|EXPKEYSIG)'; then
+  echo "verify-php-source: GPG signature is not a GOODSIG/EXPKEYSIG:" >&2
   echo "$status" >&2
   exit 1
 fi
